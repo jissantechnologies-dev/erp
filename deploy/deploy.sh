@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Redeploys the current working tree to erp.gvndemo.com.
+# Redeploys the current working tree to erpdemo.gvndemo.com.
 #
 # Idempotent: rebuilds the bundle, ships it, installs deps, applies pending
 # migrations and restarts the service. It does NOT touch the live foundry-erp
@@ -39,6 +39,6 @@ echo "service active, $(systemctl show indus-erp -p MemoryCurrent --value | awk 
 REMOTE
 
 echo "==> smoke test"
-"${SSH[@]}" 'curl -s -o /dev/null -w "  static HTTP %{http_code}\n" http://127.0.0.1/ -H "Host: erp.gvndemo.com";
-             curl -s -o /dev/null -w "  api    HTTP %{http_code} (401 expected)\n" http://127.0.0.1/api/auth/me -H "Host: erp.gvndemo.com"'
+"${SSH[@]}" 'curl -s -o /dev/null -w "  static HTTP %{http_code}\n" http://127.0.0.1/ -H "Host: erpdemo.gvndemo.com";
+             curl -s -o /dev/null -w "  api    HTTP %{http_code} (401 expected)\n" http://127.0.0.1/api/auth/me -H "Host: erpdemo.gvndemo.com"'
 echo "==> done"

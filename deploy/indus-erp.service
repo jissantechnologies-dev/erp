@@ -1,5 +1,5 @@
 [Unit]
-Description=Indus ERP (NestJS API) — erp.gvndemo.com
+Description=Indus ERP (NestJS API) — erpdemo.gvndemo.com
 Documentation=https://github.com/jissantechnologies-dev/erp
 After=network-online.target postgresql.service
 Wants=network-online.target
