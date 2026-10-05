@@ -1,0 +1,570 @@
+// Indus ERP — multi-tenant foundry ERP.
+//
+// TENANCY MODEL
+// Every tenant-owned row carries `tenantId`. Scoping is enforced in two layers:
+//   1. Prisma client extension (src/prisma/tenant.extension.ts) injects the
+//      tenantId filter on every query, so a service cannot forget it.
+//   2. Postgres row-level security (prisma/rls.sql) as a backstop, keyed on the
+//      `app.current_tenant` session variable set per request.
+// Natural keys (part numbers, tool codes, ...) are unique PER TENANT, never
+// globally — hence the compound @@unique([tenantId, ...]) on each.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* ============================== Tenancy & auth ============================= */
+
+model Tenant {
+  id        String       @id @default(cuid())
+  /// Workspace URL segment / subdomain, e.g. "indus-foundries".
+  slug      String       @unique
+  name      String
+  status    TenantStatus @default(TRIAL)
+  /// Free-form per-tenant settings (branding, locale, fiscal year start).
+  settings  Json         @default("{}")
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  users         User[]
+  roles         Role[]
+  plants        Plant[]
+  numberSeries  NumberSeries[]
+  customers     Customer[]
+  alloys        Alloy[]
+  parts         Part[]
+  drawings      Drawing[]
+  tools         Tool[]
+  partMappings  PartMapping[]
+  attachments   Attachment[]
+  auditLogs     AuditLog[]
+
+  @@map("tenants")
+}
+
+enum TenantStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+/// A physical works. Present from day one because the design's Stock Transfer,
+/// furnaces (IF-1/IF-2) and machine lists are all plant-scoped.
+model Plant {
+  id        String   @id @default(cuid())
+  tenantId  String
+  code      String
+  name      String
+  city      String?
+  state     String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users  UserPlant[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("plants")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  tenantId     String
+  email        String
+  fullName     String
+  passwordHash String?
+  /// Short display name used in the design's owner/reviewer columns ("Arun V.").
+  displayName  String?
+  isActive     Boolean  @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles         UserRole[]
+  plants        UserPlant[]
+  refreshTokens RefreshToken[]
+
+  // Back-relations for "owner"/"created by" columns.
+  ownedRevisions DrawingRevision[] @relation("RevisionOwner")
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  tenantId    String
+  /// Stable key for the seeded roles ("owner", "methods", ...); null if custom.
+  key         String?
+  name        String
+  description String?
+  /// Permission strings, e.g. ["masters:*", "sales:read"]. See @erp/shared rbac.
+  permissions String[]
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  tenant Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users  UserRole[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+model UserRole {
+  userId String
+  roleId String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model UserPlant {
+  userId  String
+  plantId String
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plant Plant @relation(fields: [plantId], references: [id], onDelete: Cascade)
+
+  @@id([userId, plantId])
+  @@map("user_plants")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  /// SHA-256 of the token; the raw value is never stored.
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// Document numbering ("ENQ-0001", "IF-PH-4410"). Per tenant, per document type,
+/// so the design's "Assigned from the number series" read-only fields are real.
+model NumberSeries {
+  id        String   @id @default(cuid())
+  tenantId  String
+  /// Document type key: "part", "enquiry", "quotation", "salesOrder", ...
+  docType   String
+  prefix    String
+  /// Zero-padding width; 4 renders ENQ-0001.
+  padding   Int      @default(4)
+  nextValue Int      @default(1)
+  suffix    String?
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, docType])
+  @@map("number_series")
+}
+
+/* ================================= Sales ================================== */
+
+model Customer {
+  id          String         @id @default(cuid())
+  tenantId    String
+  code        String
+  name        String
+  city        String?
+  state       String?
+  industry    String?
+  gstin       String?
+  status      CustomerStatus @default(PROSPECT)
+  /// "Customer since" — the design shows month/year only.
+  since       DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenant   Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  contacts CustomerContact[]
+  parts    Part[]
+  drawings Drawing[]
+  mappings PartMapping[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, name])
+  @@map("customers")
+}
+
+enum CustomerStatus {
+  ACTIVE
+  PROSPECT
+  INACTIVE
+}
+
+model CustomerContact {
+  id          String  @id @default(cuid())
+  customerId  String
+  name        String
+  designation String?
+  phone       String?
+  email       String?
+  isPrimary   Boolean @default(false)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("customer_contacts")
+}
+
+/* ========================== Masters: Material / Alloy ===================== */
+
+model Alloy {
+  id               String      @id @default(cuid())
+  tenantId         String
+  code             String
+  name             String
+  family           String
+  standard         String?
+  equivalentGrades String?
+  status           AlloyStatus @default(PENDING_APPROVAL)
+
+  tensileStrengthMpa Decimal? @db.Decimal(8, 2)
+  proofStressMpa     Decimal? @db.Decimal(8, 2)
+  elongationPct      Decimal? @db.Decimal(5, 2)
+  /// Free text because the design shows ranges ("170-230", "<= 187").
+  hardnessHb         String?
+  pouringTempC       String?
+  densityGCm3        Decimal? @db.Decimal(5, 3)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant               Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  chemistry            ChemistryLimit[]
+  mechanicalProperties MechanicalProperty[]
+  chargeMix            ChargeMixItem[]
+  parts                Part[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("alloys")
+}
+
+enum AlloyStatus {
+  APPROVED
+  PENDING_APPROVAL
+  OBSOLETE
+}
+
+model ChemistryLimit {
+  id       String   @id @default(cuid())
+  alloyId  String
+  element  String
+  minPct   Decimal? @db.Decimal(6, 3)
+  maxPct   Decimal? @db.Decimal(6, 3)
+  remarks  String?
+  sequence Int      @default(0)
+
+  alloy Alloy @relation(fields: [alloyId], references: [id], onDelete: Cascade)
+
+  @@unique([alloyId, element])
+  @@map("chemistry_limits")
+}
+
+model MechanicalProperty {
+  id          String @id @default(cuid())
+  alloyId     String
+  property    String
+  requirement String
+  testMethod  String?
+  testBar     String?
+  sequence    Int    @default(0)
+
+  alloy Alloy @relation(fields: [alloyId], references: [id], onDelete: Cascade)
+
+  @@index([alloyId])
+  @@map("mechanical_properties")
+}
+
+/// "Typical Charge Mix (per 1,000 kg)" from the alloy detail's Charge Guide tab.
+model ChargeMixItem {
+  id       String  @id @default(cuid())
+  alloyId  String
+  input    String
+  qtyKg    Decimal @db.Decimal(10, 2)
+  sequence Int     @default(0)
+
+  alloy Alloy @relation(fields: [alloyId], references: [id], onDelete: Cascade)
+
+  @@index([alloyId])
+  @@map("charge_mix_items")
+}
+
+/* ============================ Masters: Part Master ======================== */
+
+model Part {
+  id             String     @id @default(cuid())
+  tenantId       String
+  /// Internal number from the "part" number series, e.g. "IF-PH-4410".
+  partNo         String
+  name           String
+  category       String?
+  customerId     String
+  customerPartNo String
+  status         PartStatus @default(DEVELOPMENT)
+
+  alloyId          String
+  castingProcess   String?
+  heatTreatment    String?  @default("None")
+  toolId           String?
+  cavitiesPerMould Int?
+  coresPerCasting  Int?
+
+  castingWeightKg  Decimal  @db.Decimal(10, 3)
+  machinedWeightKg Decimal? @db.Decimal(10, 3)
+  /// Casting + gating + risers. Yield % is derived, never stored.
+  pouredWeightKg   Decimal? @db.Decimal(10, 3)
+  uom              String   @default("Nos")
+  supplyCondition  String?
+
+  drawingNo        String?
+  currentRevision  String?
+  customerSpec     String?
+  generalTolerance String?
+  surfaceFinish    String?
+  painting         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id])
+  alloy    Alloy    @relation(fields: [alloyId], references: [id])
+  /// Primary pattern/die. Further tooling links through Tool.partId.
+  primaryTool Tool?  @relation("PartPrimaryTool", fields: [toolId], references: [id])
+
+  drawings        Drawing[]
+  tools           Tool[]                      @relation("ToolPart")
+  mappings        PartMapping[]
+  characteristics InspectionCharacteristic[]
+
+  @@unique([tenantId, partNo])
+  @@unique([tenantId, customerId, customerPartNo])
+  @@index([tenantId, status])
+  @@index([tenantId, name])
+  @@map("parts")
+}
+
+enum PartStatus {
+  DEVELOPMENT
+  RELEASED
+  UNDER_REVISION
+  OBSOLETE
+}
+
+/// The part detail's "Specifications" tab: chemical, mechanical and dimensional
+/// checks with the stage and frequency at which each is verified.
+model InspectionCharacteristic {
+  id             String @id @default(cuid())
+  partId         String
+  characteristic String
+  specification  String
+  method         String?
+  /// Melting | Moulding | Machining | Final
+  stage          String?
+  frequency      String?
+  sequence       Int    @default(0)
+
+  part Part @relation(fields: [partId], references: [id], onDelete: Cascade)
+
+  @@index([partId])
+  @@map("inspection_characteristics")
+}
+
+/* ========================= Masters: Drawing Revision ===================== */
+
+/// Drawing identity. Revisions are append-only; the current one is the single
+/// revision with status RELEASED or PENDING_APPROVAL (enforced in the service).
+model Drawing {
+  id         String @id @default(cuid())
+  tenantId   String
+  drawingNo  String
+  partId     String
+  customerId String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  part      Part              @relation(fields: [partId], references: [id], onDelete: Cascade)
+  customer  Customer          @relation(fields: [customerId], references: [id])
+  revisions DrawingRevision[]
+
+  @@unique([tenantId, drawingNo])
+  @@index([tenantId])
+  @@map("drawings")
+}
+
+model DrawingRevision {
+  id                String        @id @default(cuid())
+  drawingId         String
+  /// "A", "B", "C" ... as the design renders it.
+  revision          String
+  revisionDate      DateTime
+  changeDescription String
+  status            DrawingStatus @default(PENDING_APPROVAL)
+  ownerId           String?
+  approvedAt        DateTime?
+  createdAt         DateTime      @default(now())
+
+  drawing Drawing @relation(fields: [drawingId], references: [id], onDelete: Cascade)
+  owner   User?   @relation("RevisionOwner", fields: [ownerId], references: [id])
+
+  @@unique([drawingId, revision])
+  @@index([drawingId])
+  @@map("drawing_revisions")
+}
+
+enum DrawingStatus {
+  RELEASED
+  PENDING_APPROVAL
+  UNDER_REVISION
+  SUPERSEDED
+}
+
+/* ====================== Masters: Pattern / Die / Tool ==================== */
+
+model Tool {
+  id          String     @id @default(cuid())
+  tenantId    String
+  code        String
+  type        ToolType
+  description String
+  partId      String?
+  material    String?
+  cavities    Int        @default(1)
+  /// Rated life and shots consumed; the design renders used/life as a bar.
+  lifeShots   Int
+  usedShots   Int        @default(0)
+  location    String?
+  status      ToolStatus @default(AVAILABLE)
+  revision    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  part   Part?  @relation("ToolPart", fields: [partId], references: [id])
+  /// Back-relation for Part.toolId (primary tool).
+  primaryForParts Part[] @relation("PartPrimaryTool")
+
+  @@unique([tenantId, code])
+  @@index([tenantId, status])
+  @@map("tools")
+}
+
+enum ToolType {
+  PATTERN
+  CORE_BOX
+  DIE
+  FIXTURE
+  GAUGE
+}
+
+enum ToolStatus {
+  AVAILABLE
+  IN_USE
+  MAINTENANCE_DUE
+  UNDER_REPAIR
+  SCRAPPED
+}
+
+/* ====================== Masters: Customer Part Mapping =================== */
+
+/// Links our part to the customer's own part number, with the agreed price and
+/// supply condition. One active mapping per (customer, part).
+model PartMapping {
+  id              String        @id @default(cuid())
+  tenantId        String
+  customerId      String
+  partId          String
+  customerPartNo  String
+  drawingRef      String?
+  /// Money in paise — integers only, no float drift.
+  pricePaise      BigInt?
+  supplyCondition String?
+  status          MappingStatus @default(MAPPED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  part     Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, customerId, partId])
+  @@index([tenantId])
+  @@map("part_mappings")
+}
+
+enum MappingStatus {
+  MAPPED
+  UNDER_REVISION
+  OBSOLETE
+}
+
+/* ============================== Cross-cutting ============================= */
+
+/// Backs every `dropzone()` in the design. Polymorphic by (entityType, entityId)
+/// so drawings, specs and sample photos attach to any record.
+model Attachment {
+  id           String   @id @default(cuid())
+  tenantId     String
+  entityType   String
+  entityId     String
+  fileName     String
+  /// Storage key (S3 / disk), never a public URL.
+  storageKey   String
+  mimeType     String
+  sizeBytes    Int
+  /// Short label the design shows under the filename ("Customer drawing - Rev C").
+  description  String?
+  uploadedById String?
+  createdAt    DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, entityType, entityId])
+  @@map("attachments")
+}
+
+/// Feeds the design's "Activity" timeline and satisfies the ISO audit-trail
+/// requirement that the Quality module depends on.
+model AuditLog {
+  id         String   @id @default(cuid())
+  tenantId   String
+  entityType String
+  entityId   String
+  action     String
+  /// Changed fields only: { field: { from, to } }.
+  diff       Json?
+  actorId    String?
+  actorName  String?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, entityType, entityId])
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}

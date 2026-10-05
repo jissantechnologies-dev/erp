@@ -1,0 +1,56 @@
+/*
+ * App-level additions on top of design-system.css. Everything here either
+ * supports behaviour the static prototype did not have (loading, focus
+ * management, toasts as a React portal) or fills a gap the prototype faked
+ * with inline styles.
+ */
+
+/* Route transitions: keep the page from flashing empty between fetches. */
+.page-loading { opacity: .55; pointer-events: none; transition: opacity .12s ease; }
+
+/* Skeleton rows, used while a register's first page loads. */
+.skel { background: var(--surface-2); border-radius: var(--r-sm); height: 14px; animation: skel 1.2s ease-in-out infinite; }
+@keyframes skel { 0%, 100% { opacity: 1 } 50% { opacity: .5 } }
+.tbl .skel { height: 12px }
+
+/* Toast stack — the prototype's data-toast handler, as a real container. */
+.toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+.toast {
+  background: var(--fg); color: var(--bg); padding: 10px 14px; border-radius: var(--r);
+  box-shadow: var(--shadow); font-size: 13.5px; max-width: 380px;
+  animation: toast-in .16s ease-out;
+}
+.toast.bad { background: var(--bad); color: #fff }
+.toast.ok  { background: var(--ok);  color: #fff }
+@keyframes toast-in { from { transform: translateY(6px); opacity: 0 } to { transform: none; opacity: 1 } }
+
+/* Screen-reader-only text for icon-only controls. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+/* Sortable table headers. */
+.tbl th.sortable { cursor: pointer; user-select: none; white-space: nowrap }
+.tbl th.sortable:hover { color: var(--fg) }
+.tbl th .sort-ind { font-size: 16px; vertical-align: middle; opacity: .55 }
+.tbl th[aria-sort] .sort-ind { opacity: 1; color: var(--primary) }
+
+/* Auth screens sit outside the app shell. */
+.auth-wrap { min-height: 100%; display: grid; place-items: center; padding: 24px; background: var(--bg) }
+.auth-card { width: 100%; max-width: 420px; background: var(--surface); border-radius: 12px; box-shadow: var(--shadow); padding: 28px }
+.auth-card h1 { font: 700 22px var(--f-display); margin: 0 0 4px }
+.auth-card .sub { color: var(--fg-3); font-size: 13.5px; margin-bottom: 20px }
+.auth-card .f { margin-bottom: 14px }
+.auth-card .btn { width: 100% ; justify-content: center }
+
+/*
+ * .grid2 / .grid3 are referenced by the prototype's markup (dashboard and
+ * report cards) but never defined in its stylesheet — a gap in the original.
+ * Defined here so those layouts behave as the design clearly intended.
+ */
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; align-items: start }
+@media (max-width: 900px) {
+  .grid2, .grid3 { grid-template-columns: 1fr }
+}

@@ -1,0 +1,8 @@
+# Normalise to LF in the repository; Git converts on checkout per platform.
+* text=auto eol=lf
+
+# The design prototype is the reference artefact — keep it byte-stable.
+mockups/*.html -text
+
+# Generated; collapse in diffs and reviews.
+package-lock.json linguist-generated=true -diff
