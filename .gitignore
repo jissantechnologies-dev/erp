@@ -11,3 +11,7 @@ apps/api/prisma/migrations/dev.db*
 uploads/
 apps/api/.env
 *.tsbuildinfo
+deploy/indus-erp.env
+deploy/.dbpw
+deploy/bundle/
+deploy/.adminpw

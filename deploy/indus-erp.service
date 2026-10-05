@@ -1,0 +1,38 @@
+[Unit]
+Description=Indus ERP (NestJS API) — erp.gvndemo.com
+Documentation=https://github.com/jissantechnologies-dev/erp
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/indus-erp
+EnvironmentFile=/etc/indus-erp.env
+# Keep the V8 heap small: this droplet also runs schoolapp and the live
+# foundry-erp, so the API must not expand to fill available memory.
+Environment=NODE_OPTIONS=--max-old-space-size=160
+ExecStart=/usr/bin/node apps/api/dist/main.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=indus-erp
+
+# Memory guard. MemoryHigh throttles before MemoryMax kills, so a leak slows
+# this service down rather than letting the OOM killer pick off Postgres or
+# Schoolapp.API.
+MemoryHigh=200M
+MemoryMax=320M
+
+# Hardening: the service needs only its own directory and the local socket.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/indus-erp
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target
